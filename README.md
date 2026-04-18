@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DST Control Panel
 
-## Getting Started
+Control plane for the Dynamic SEO Translator WordPress plugin.
 
-First, run the development server:
+This app is the remote authority for:
+
+- license activation and plan rights
+- release publishing and package delivery
+- mandatory update policy
+- hard lock decisions that stop runtime services but keep admin recovery available
+
+## Current status
+
+This panel now supports two modes:
+
+- `database mode`: live Prisma + Postgres data
+- `demo fallback`: safe in-memory preview when `DATABASE_URL` is not configured
+
+It already includes:
+
+- a dashboard that reflects the chosen hard-lock model
+- Prisma schema for licenses, activations, releases, policies, and request logs
+- Prisma client wiring with safe demo fallback
+- plugin-facing API routes under `src/app/api/plugin/*`
+- typed control response contracts in `src/lib/contracts.ts`
+- a seed script for local/demo records
+
+It does not yet include:
+
+- authentication
+- release uploads
+- signed downloads
+- WordPress-side signed request verification
+
+## Local development
 
 ```bash
+npm install
+npm run db:generate
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Create `.env.local` from `.env.example`.
 
-## Learn More
+```bash
+Copy-Item .env.example .env.local
+```
 
-To learn more about Next.js, take a look at the following resources:
+If you want real database mode, set a Postgres connection string and then run:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run db:push
+npm run db:seed
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+If `DATABASE_URL` is empty, the app still works in demo fallback mode.
 
-## Deploy on Vercel
+## Plugin API surface
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `POST /api/plugin/license/activate`
+- `POST /api/plugin/license/check`
+- `POST /api/plugin/heartbeat`
+- `GET /api/plugin/update-manifest`
+- `GET /api/plugin/download`
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Recommended next pass
+
+1. Add admin auth and protected dashboard sections.
+2. Add release upload flow and signed package delivery.
+3. Update the WordPress plugin to cache control responses and respect hard lock mode.
+4. Replace plain shared-secret access with signed request verification.
+5. Deploy to Vercel and set `APP_BASE_URL`, `DATABASE_URL`, and `PLUGIN_SHARED_SECRET`.

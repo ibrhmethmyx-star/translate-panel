@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum LicensePlan {
+  FREE
+  PRO
+  AGENCY
+}
+
+enum LicenseStatus {
+  ACTIVE
+  INACTIVE
+  INVALID
+  EXPIRED
+  SUSPENDED
+}
+
+enum ActivationStatus {
+  HEALTHY
+  WARNING
+  HARD_LOCK
+}
+
+enum ReleaseChannel {
+  STABLE
+  BETA
+}
+
+enum LockLevel {
+  NONE
+  SOFT
+  HARD
+  BLOCKED
+}
+
+enum RequestLogType {
+  ACTIVATE
+  CHECK
+  HEARTBEAT
+  UPDATE_MANIFEST
+  DOWNLOAD
+}
+
+model License {
+  id                String             @id @default(cuid())
+  key               String             @unique
+  customerName      String
+  plan              LicensePlan        @default(FREE)
+  status            LicenseStatus      @default(INACTIVE)
+  maxDomains        Int                @default(1)
+  expiresAt         DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  activations       LicenseActivation[]
+  addonEntitlements AddonEntitlement[]
+  requestLogs       RequestLog[]
+}
+
+model AddonEntitlement {
+  id        String   @id @default(cuid())
+  licenseId String
+  addonSlug String
+  createdAt DateTime @default(now())
+  license   License  @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+
+  @@unique([licenseId, addonSlug])
+}
+
+model LicenseActivation {
+  id            String           @id @default(cuid())
+  licenseId     String
+  siteUrl       String
+  siteHost      String
+  instanceHash  String
+  pluginVersion String
+  status        ActivationStatus @default(HEALTHY)
+  lastSeenAt    DateTime         @default(now())
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  license       License          @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+
+  @@unique([siteHost, instanceHash])
+  @@index([licenseId, siteHost])
+}
+
+model Release {
+  id          String         @id @default(cuid())
+  version     String         @unique
+  channel     ReleaseChannel @default(STABLE)
+  changelog   String[]
+  zipUrl      String
+  checksum    String
+  isMandatory Boolean        @default(false)
+  publishedAt DateTime
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model ReleasePolicy {
+  id                      String    @id @default(cuid())
+  minimumSupportedVersion String
+  enforcedFrom            DateTime
+  graceUntil              DateTime
+  lockLevel               LockLevel @default(HARD)
+  message                 String
+  isActive                Boolean   @default(true)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([isActive, enforcedFrom])
+}
+
+model RequestLog {
+  id            String         @id @default(cuid())
+  type          RequestLogType
+  siteUrl       String?
+  siteHost      String?
+  instanceHash  String?
+  pluginVersion String?
+  responseCode  Int?
+  lockLevel     LockLevel?
+  payload       Json?
+  createdAt     DateTime       @default(now())
+  licenseId     String?
+  license       License?       @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+
+  @@index([type, createdAt])
+  @@index([siteHost, createdAt])
+}
