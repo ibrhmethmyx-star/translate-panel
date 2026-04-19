@@ -12,10 +12,13 @@ export type LockLevel = "none" | "soft" | "hard" | "blocked";
 export type ControlPlaneDataSource = "demo" | "database";
 
 export type ActivationHealth = "healthy" | "warning" | "hard_lock";
+export type SiteLicenseMode = "licensed" | "free";
 
 export interface PanelStats {
   totalLicenses: number;
-  activeSites: number;
+  totalSites: number;
+  licensedSites: number;
+  freeSites: number;
   outdatedSites: number;
   hardLockedSites: number;
 }
@@ -40,6 +43,22 @@ export interface ActivationRecord {
   pluginVersion: string;
   lastSeenAt: string;
   status: ActivationHealth;
+}
+
+export interface SiteInstallationRecord {
+  id: string;
+  siteUrl: string;
+  siteHost: string;
+  instanceHash: string;
+  pluginVersion: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  licenseMode: SiteLicenseMode;
+  licenseKey: string | null;
+  licenseStatus: LicenseStatus;
+  plan: LicensePlan;
+  lockLevel: LockLevel;
+  health: ActivationHealth;
 }
 
 export interface ReleaseRecord {
@@ -105,6 +124,7 @@ export interface DashboardSnapshot {
   activations: ActivationRecord[];
   releases: ReleaseRecord[];
   releasePolicy: ReleasePolicy;
+  sites: SiteInstallationRecord[];
 }
 
 export interface PluginApiRoute {

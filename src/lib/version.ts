@@ -1,4 +1,4 @@
-﻿export function compareVersions(left: string, right: string): number {
+export function compareVersions(left: string, right: string): number {
   const leftParts = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
   const rightParts = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
   const width = Math.max(leftParts.length, rightParts.length);

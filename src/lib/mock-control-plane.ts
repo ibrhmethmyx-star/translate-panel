@@ -8,6 +8,7 @@ import type {
   PluginRequestInput,
   ReleasePolicy,
   ReleaseRecord,
+  SiteInstallationRecord,
 } from "@/lib/contracts";
 import { compareVersions } from "@/lib/version";
 
@@ -117,19 +118,78 @@ export const activations: ActivationRecord[] = [
   },
 ];
 
+export const sites: SiteInstallationRecord[] = [
+  {
+    id: "site_1",
+    siteUrl: "https://northwind.example",
+    siteHost: "northwind.example",
+    instanceHash: "inst-alpha",
+    pluginVersion: "0.3.0",
+    firstSeenAt: "2026-04-18T09:00:00.000Z",
+    lastSeenAt: "2026-04-19T09:00:00.000Z",
+    licenseMode: "licensed",
+    licenseKey: "DST-AGENCY-ALPHA001",
+    licenseStatus: "active",
+    plan: "agency",
+    lockLevel: "none",
+    health: "healthy",
+  },
+  {
+    id: "site_2",
+    siteUrl: "https://atelier-fera.example",
+    siteHost: "atelier-fera.example",
+    instanceHash: "inst-bravo",
+    pluginVersion: "0.2.4",
+    firstSeenAt: "2026-04-18T08:30:00.000Z",
+    lastSeenAt: "2026-04-19T08:42:00.000Z",
+    licenseMode: "licensed",
+    licenseKey: "DST-PRO-BRAVO002",
+    licenseStatus: "active",
+    plan: "pro",
+    lockLevel: "soft",
+    health: "warning",
+  },
+  {
+    id: "site_3",
+    siteUrl: "https://legacy-shop.example",
+    siteHost: "legacy-shop.example",
+    instanceHash: "inst-charlie",
+    pluginVersion: "0.2.3",
+    firstSeenAt: "2026-04-17T12:10:00.000Z",
+    lastSeenAt: "2026-04-19T07:58:00.000Z",
+    licenseMode: "licensed",
+    licenseKey: "DST-PRO-SUSPEND003",
+    licenseStatus: "suspended",
+    plan: "pro",
+    lockLevel: "hard",
+    health: "hard_lock",
+  },
+  {
+    id: "site_4",
+    siteUrl: "https://free-demo.example",
+    siteHost: "free-demo.example",
+    instanceHash: "inst-delta",
+    pluginVersion: "0.2.2",
+    firstSeenAt: "2026-04-18T16:10:00.000Z",
+    lastSeenAt: "2026-04-19T09:15:00.000Z",
+    licenseMode: "free",
+    licenseKey: null,
+    licenseStatus: "inactive",
+    plan: "free",
+    lockLevel: "soft",
+    health: "warning",
+  },
+];
+
 export const panelStats: PanelStats = {
   totalLicenses: licenses.length,
-  activeSites: activations.length,
-  outdatedSites: activations.filter(
-    (activation) =>
-      compareVersions(
-        activation.pluginVersion,
-        releasePolicy.minimumSupportedVersion,
-      ) < 0,
+  totalSites: sites.length,
+  licensedSites: sites.filter((site) => site.licenseMode === "licensed").length,
+  freeSites: sites.filter((site) => site.licenseMode === "free").length,
+  outdatedSites: sites.filter(
+    (site) => compareVersions(site.pluginVersion, releasePolicy.minimumSupportedVersion) < 0,
   ).length,
-  hardLockedSites: activations.filter(
-    (activation) => activation.status === "hard_lock",
-  ).length,
+  hardLockedSites: sites.filter((site) => site.lockLevel === "hard" || site.lockLevel === "blocked").length,
 };
 
 export const apiSurface: PluginApiRoute[] = [

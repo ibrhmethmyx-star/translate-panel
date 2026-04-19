@@ -8,6 +8,7 @@ import type {
   PluginRequestInput,
   ReleasePolicy,
   ReleaseRecord,
+  SiteInstallationRecord,
 } from "@/lib/contracts";
 import {
   ActivationStatus,
@@ -17,6 +18,7 @@ import {
   Prisma,
   ReleaseChannel,
   RequestLogType,
+  SiteLicenseMode as DbSiteLicenseMode,
 } from "@prisma/client";
 import {
   activations as demoActivations,
@@ -27,6 +29,7 @@ import {
   panelStats as demoPanelStats,
   releasePolicy as demoReleasePolicy,
   releases as demoReleases,
+  sites as demoSites,
 } from "@/lib/mock-control-plane";
 import { getPrismaClient, hasDatabaseUrl } from "@/lib/prisma";
 import { compareVersions } from "@/lib/version";
@@ -46,6 +49,16 @@ type LicenseWithRelations = Prisma.LicenseGetPayload<{
 type PolicyRecord = Prisma.ReleasePolicyGetPayload<Record<string, never>>;
 type ReleaseDbRecord = Prisma.ReleaseGetPayload<Record<string, never>>;
 type ActivationDbRecord = Prisma.LicenseActivationGetPayload<Record<string, never>>;
+type SiteDbRecord = Prisma.SiteInstallationGetPayload<{
+  include: {
+    license: {
+      select: {
+        customerName: true;
+        key: true;
+      };
+    };
+  };
+}>;
 
 export interface ControlPlanePluginResult {
   source: ControlPlaneDataSource;
@@ -96,10 +109,7 @@ function extractSiteHost(siteUrl: string): string {
   try {
     return new URL(siteUrl).host;
   } catch {
-    return siteUrl
-      .replace(/^https?:\/\//, "")
-      .replace(/\/.*$/, "")
-      .trim();
+    return siteUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "").trim();
   }
 }
 
@@ -159,6 +169,10 @@ function mapActivationStatus(
   }
 }
 
+function mapSiteMode(mode: DbSiteLicenseMode): SiteInstallationRecord["licenseMode"] {
+  return mode === DbSiteLicenseMode.LICENSED ? "licensed" : "free";
+}
+
 function mapLicenseRecord(license: LicenseWithRelations): LicenseRecord {
   return {
     id: license.id,
@@ -182,6 +196,24 @@ function mapActivationRecord(activation: ActivationDbRecord): ActivationRecord {
     pluginVersion: activation.pluginVersion,
     lastSeenAt: toIsoString(activation.lastSeenAt) ?? "",
     status: mapActivationStatus(activation.status),
+  };
+}
+
+function mapSiteRecord(site: SiteDbRecord): SiteInstallationRecord {
+  return {
+    id: site.id,
+    siteUrl: site.siteUrl,
+    siteHost: site.siteHost,
+    instanceHash: site.instanceHash,
+    pluginVersion: site.pluginVersion,
+    firstSeenAt: toIsoString(site.firstSeenAt) ?? "",
+    lastSeenAt: toIsoString(site.lastSeenAt) ?? "",
+    licenseMode: mapSiteMode(site.licenseMode),
+    licenseKey: site.licenseKey,
+    licenseStatus: mapStatus(site.licenseStatus),
+    plan: mapPlan(site.plan),
+    lockLevel: mapLockLevel(site.runtimeLockLevel),
+    health: mapActivationStatus(site.health),
   };
 }
 
@@ -209,6 +241,38 @@ function mapReleasePolicy(policy: PolicyRecord): ReleasePolicy {
   };
 }
 
+function buildDefaultPolicy(): ReleasePolicy {
+  const now = new Date().toISOString();
+
+  return {
+    id: "policy_default",
+    minimumSupportedVersion: "0.0.0",
+    enforcedFrom: now,
+    graceUntil: now,
+    lockLevel: "none",
+    message: "No active release policy has been configured yet.",
+  };
+}
+
+function buildEmptyDashboard(): DashboardSnapshot {
+  return {
+    dataSource: "database",
+    panelStats: {
+      totalLicenses: 0,
+      totalSites: 0,
+      licensedSites: 0,
+      freeSites: 0,
+      outdatedSites: 0,
+      hardLockedSites: 0,
+    },
+    licenses: [],
+    activations: [],
+    releases: [],
+    releasePolicy: buildDefaultPolicy(),
+    sites: [],
+  };
+}
+
 function buildDemoDashboard(): DashboardSnapshot {
   return {
     dataSource: "demo",
@@ -217,6 +281,7 @@ function buildDemoDashboard(): DashboardSnapshot {
     activations: demoActivations,
     releases: demoReleases,
     releasePolicy: demoReleasePolicy,
+    sites: demoSites,
   };
 }
 
@@ -242,12 +307,23 @@ function hasReachedDomainLimit(
     return false;
   }
 
-  const distinctHosts = new Set(license.activations.map((activation) => activation.siteHost));
+  const distinctHosts = new Set(
+    license.activations.map((activation) => activation.siteHost),
+  );
 
   return distinctHosts.size >= license.maxDomains;
 }
 
-function buildInactiveLicenseState() {
+function buildInactiveLicenseState(input?: PluginRequestInput) {
+  if (input?.licenseKey.trim()) {
+    return {
+      status: "invalid" as const,
+      plan: "free" as const,
+      addons: [],
+      expiresAt: null,
+    };
+  }
+
   return {
     status: "inactive" as const,
     plan: "free" as const,
@@ -256,15 +332,33 @@ function buildInactiveLicenseState() {
   };
 }
 
+function buildUpdateState(
+  input: PluginRequestInput,
+  latestRelease: ReleaseDbRecord | null,
+  policy: PolicyRecord | null,
+) {
+  const latestVersion = latestRelease?.version ?? input.pluginVersion;
+  const minimumSupportedVersion =
+    policy?.minimumSupportedVersion ?? latestVersion ?? "0.0.0";
+
+  return {
+    latestVersion,
+    minimumSupportedVersion,
+    isUpdateRequired: latestRelease
+      ? compareVersions(input.pluginVersion, latestRelease.version) < 0
+      : false,
+    graceUntil: toIsoString(policy?.graceUntil) ?? "",
+    downloadUrl: latestRelease ? buildDownloadUrl(latestRelease.version) : "",
+    checksum: latestRelease?.checksum ?? "",
+  };
+}
+
 function buildLockStateFromDatabase(params: {
   input: PluginRequestInput;
-  policy: PolicyRecord;
+  policy: PolicyRecord | null;
   license: LicenseWithRelations | null;
 }): PluginLockState {
   const { input, policy, license } = params;
-  const now = new Date();
-  const isBelowMinimum =
-    compareVersions(input.pluginVersion, policy.minimumSupportedVersion) < 0;
 
   if (
     license &&
@@ -292,11 +386,25 @@ function buildLockStateFromDatabase(params: {
     }
   }
 
+  if (!policy) {
+    return {
+      level: "none",
+      reason: "no_policy_configured",
+      message: "No active release policy is configured yet.",
+    };
+  }
+
+  const now = new Date();
+  const isBelowMinimum =
+    compareVersions(input.pluginVersion, policy.minimumSupportedVersion) < 0;
+  const enforcedLevel = mapLockLevel(policy.lockLevel);
+
   if (isBelowMinimum && now > policy.graceUntil) {
     return {
-      level: "hard",
+      level: enforcedLevel === "none" ? "hard" : enforcedLevel,
       reason: "minimum_version_not_met",
       message:
+        policy.message ||
         "The plugin version is below the supported floor. Keep admin access available and stop runtime services until the site updates.",
     };
   }
@@ -315,6 +423,34 @@ function buildLockStateFromDatabase(params: {
     reason: "runtime_allowed",
     message: "Plugin runtime services may continue.",
   };
+}
+
+function deriveActivationStatus(lockLevel: PluginLockState["level"]): ActivationStatus {
+  if (lockLevel === "hard" || lockLevel === "blocked") {
+    return ActivationStatus.HARD_LOCK;
+  }
+
+  if (lockLevel === "soft") {
+    return ActivationStatus.WARNING;
+  }
+
+  return ActivationStatus.HEALTHY;
+}
+
+function deriveDatabaseLockLevel(lockLevel: PluginLockState["level"]): LockLevel {
+  if (lockLevel === "hard") {
+    return LockLevel.HARD;
+  }
+
+  if (lockLevel === "blocked") {
+    return LockLevel.BLOCKED;
+  }
+
+  if (lockLevel === "soft") {
+    return LockLevel.SOFT;
+  }
+
+  return LockLevel.NONE;
 }
 
 async function logRequest(params: {
@@ -339,16 +475,99 @@ async function logRequest(params: {
       instanceHash: params.input.instanceHash || null,
       pluginVersion: params.input.pluginVersion || null,
       responseCode: params.responseCode,
-      lockLevel:
-        params.lockLevel === "soft"
-          ? LockLevel.SOFT
-          : params.lockLevel === "hard"
-            ? LockLevel.HARD
-            : params.lockLevel === "blocked"
-              ? LockLevel.BLOCKED
-              : LockLevel.NONE,
+      lockLevel: deriveDatabaseLockLevel(params.lockLevel ?? "none"),
       licenseId: params.licenseId ?? null,
       payload: params.payload,
+    },
+  });
+}
+
+async function resolveLicenseForInput(input: PluginRequestInput) {
+  const prisma = getPrismaClient();
+  const normalizedKey = input.licenseKey.trim();
+
+  if (!prisma || !normalizedKey) {
+    return null;
+  }
+
+  return prisma.license.findUnique({
+    where: {
+      key: normalizedKey,
+    },
+    include: {
+      addonEntitlements: true,
+      activations: {
+        select: {
+          siteHost: true,
+          instanceHash: true,
+        },
+      },
+    },
+  });
+}
+
+async function syncSiteInstallation(
+  input: PluginRequestInput,
+  payload: PluginControlResponse,
+) {
+  const prisma = getPrismaClient();
+
+  if (!prisma) {
+    return;
+  }
+
+  const siteHost = extractSiteHost(input.siteUrl);
+  const trimmedKey = input.licenseKey.trim();
+  const license = trimmedKey
+    ? await prisma.license.findUnique({
+        where: {
+          key: trimmedKey,
+        },
+      })
+    : null;
+
+  const licenseMode = trimmedKey
+    ? DbSiteLicenseMode.LICENSED
+    : DbSiteLicenseMode.FREE;
+  const licenseStatus = license
+    ? license.status
+    : trimmedKey
+      ? LicenseStatus.INVALID
+      : LicenseStatus.INACTIVE;
+  const plan = license?.plan ?? LicensePlan.FREE;
+
+  await prisma.siteInstallation.upsert({
+    where: {
+      siteHost_instanceHash: {
+        siteHost,
+        instanceHash: input.instanceHash,
+      },
+    },
+    update: {
+      siteUrl: input.siteUrl,
+      pluginVersion: input.pluginVersion,
+      licenseId: license?.id ?? null,
+      licenseKey: trimmedKey || null,
+      licenseMode,
+      licenseStatus,
+      plan,
+      runtimeLockLevel: deriveDatabaseLockLevel(payload.lock.level),
+      health: deriveActivationStatus(payload.lock.level),
+      lastSeenAt: new Date(),
+    },
+    create: {
+      siteUrl: input.siteUrl,
+      siteHost,
+      instanceHash: input.instanceHash,
+      pluginVersion: input.pluginVersion,
+      licenseId: license?.id ?? null,
+      licenseKey: trimmedKey || null,
+      licenseMode,
+      licenseStatus,
+      plan,
+      runtimeLockLevel: deriveDatabaseLockLevel(payload.lock.level),
+      health: deriveActivationStatus(payload.lock.level),
+      lastSeenAt: new Date(),
     },
   });
 }
@@ -360,70 +579,92 @@ async function getDatabaseSnapshot(): Promise<DashboardSnapshot> {
     return buildDemoDashboard();
   }
 
-  const [licenseRows, activationRows, releaseRows, policyRow] = await Promise.all([
-    prisma.license.findMany({
-      include: {
-        addonEntitlements: true,
-        activations: {
-          select: {
-            siteHost: true,
-            instanceHash: true,
+  const [licenseRows, activationRows, siteRows, releaseRows, policyRow] =
+    await Promise.all([
+      prisma.license.findMany({
+        include: {
+          addonEntitlements: true,
+          activations: {
+            select: {
+              siteHost: true,
+              instanceHash: true,
+            },
           },
         },
-      },
-      orderBy: {
-        createdAt: "asc",
-      },
-    }),
-    prisma.licenseActivation.findMany({
-      orderBy: {
-        lastSeenAt: "desc",
-      },
-    }),
-    prisma.release.findMany({
-      orderBy: {
-        publishedAt: "desc",
-      },
-    }),
-    prisma.releasePolicy.findFirst({
-      where: {
-        isActive: true,
-      },
-      orderBy: {
-        enforcedFrom: "desc",
-      },
-    }),
-  ]);
-
-  if (!policyRow || releaseRows.length === 0) {
-    return buildDemoDashboard();
-  }
+        orderBy: {
+          createdAt: "desc",
+        },
+      }),
+      prisma.licenseActivation.findMany({
+        orderBy: {
+          lastSeenAt: "desc",
+        },
+      }),
+      prisma.siteInstallation.findMany({
+        include: {
+          license: {
+            select: {
+              customerName: true,
+              key: true,
+            },
+          },
+        },
+        orderBy: {
+          lastSeenAt: "desc",
+        },
+      }),
+      prisma.release.findMany({
+        orderBy: {
+          publishedAt: "desc",
+        },
+      }),
+      prisma.releasePolicy.findFirst({
+        where: {
+          isActive: true,
+        },
+        orderBy: {
+          enforcedFrom: "desc",
+        },
+      }),
+    ]);
 
   const licenses = licenseRows.map(mapLicenseRecord);
   const activations = activationRows.map(mapActivationRecord);
+  const sites = siteRows.map(mapSiteRecord);
   const releases = releaseRows.map(mapReleaseRecord);
-  const releasePolicy = mapReleasePolicy(policyRow);
+  const releasePolicy = policyRow ? mapReleasePolicy(policyRow) : buildDefaultPolicy();
+
+  if (
+    licenses.length === 0 &&
+    activations.length === 0 &&
+    sites.length === 0 &&
+    releases.length === 0 &&
+    !policyRow
+  ) {
+    return buildEmptyDashboard();
+  }
 
   return {
     dataSource: "database",
     panelStats: {
       totalLicenses: licenses.length,
-      activeSites: activations.length,
-      outdatedSites: activations.filter(
-        (activation) =>
-          compareVersions(
-            activation.pluginVersion,
-            releasePolicy.minimumSupportedVersion,
-          ) < 0,
+      totalSites: sites.length,
+      licensedSites: sites.filter((site) => site.licenseMode === "licensed").length,
+      freeSites: sites.filter((site) => site.licenseMode === "free").length,
+      outdatedSites: sites.filter(
+        (site) =>
+          releasePolicy.minimumSupportedVersion !== "0.0.0" &&
+          compareVersions(site.pluginVersion, releasePolicy.minimumSupportedVersion) < 0,
       ).length,
-      hardLockedSites: activations.filter(
-        (activation) => activation.status === "hard_lock",
+      hardLockedSites: sites.filter(
+        (site) => site.lockLevel === "hard" || site.lockLevel === "blocked",
       ).length,
     },
     licenses,
     activations,
     releases,
     releasePolicy,
+    sites,
   };
 }
 
@@ -439,6 +680,7 @@ async function getDatabasePluginPayload(
     };
   }
 
+  const normalizedKey = input.licenseKey.trim();
   const [latestRelease, policy, license] = await Promise.all([
     prisma.release.findFirst({
       where: {
@@ -456,28 +698,23 @@ async function getDatabasePluginPayload(
         enforcedFrom: "desc",
       },
     }),
-    prisma.license.findUnique({
-      where: {
-        key: input.licenseKey,
-      },
-      include: {
-        addonEntitlements: true,
-        activations: {
-          select: {
-            siteHost: true,
-            instanceHash: true,
+    normalizedKey
+      ? prisma.license.findUnique({
+          where: {
+            key: normalizedKey,
           },
-        },
-      },
-    }),
+          include: {
+            addonEntitlements: true,
+            activations: {
+              select: {
+                siteHost: true,
+                instanceHash: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve(null),
   ]);
-
-  if (!latestRelease || !policy) {
-    return {
-      source: "demo",
-      payload: buildDemoPluginPayload(input),
-    };
-  }
 
   const payload: PluginControlResponse = {
     license: license
@@ -489,16 +726,8 @@ async function getDatabasePluginPayload(
           ),
           expiresAt: toIsoString(license.expiresAt),
         }
-      : buildInactiveLicenseState(),
-    update: {
-      latestVersion: latestRelease.version,
-      minimumSupportedVersion: policy.minimumSupportedVersion,
-      isUpdateRequired:
-        compareVersions(input.pluginVersion, latestRelease.version) < 0,
-      graceUntil: toIsoString(policy.graceUntil) ?? "",
-      downloadUrl: buildDownloadUrl(latestRelease.version),
-      checksum: latestRelease.checksum,
-    },
+      : buildInactiveLicenseState(input),
+    update: buildUpdateState(input, latestRelease, policy),
     lock: buildLockStateFromDatabase({
       input,
       policy,
@@ -550,7 +779,9 @@ export async function getPluginControlResponse(
   }
 
   try {
-    return await getDatabasePluginPayload(input);
+    const result = await getDatabasePluginPayload(input);
+    await syncSiteInstallation(input, result.payload);
+    return result;
   } catch (error) {
     console.error("Falling back to demo plugin payload:", error);
     return {
@@ -587,20 +818,7 @@ export async function activatePluginInstallation(
     };
   }
 
-  const license = await prisma.license.findUnique({
-    where: {
-      key: input.licenseKey,
-    },
-    include: {
-      addonEntitlements: true,
-      activations: {
-        select: {
-          siteHost: true,
-          instanceHash: true,
-        },
-      },
-    },
-  });
+  const license = await resolveLicenseForInput(input);
 
   if (!license) {
     return {
@@ -635,12 +853,7 @@ export async function activatePluginInstallation(
     };
   }
 
-  const activationStatus =
-    result.payload.lock.level === "hard"
-      ? ActivationStatus.HARD_LOCK
-      : result.payload.lock.level === "soft"
-        ? ActivationStatus.WARNING
-        : ActivationStatus.HEALTHY;
+  const activationStatus = deriveActivationStatus(result.payload.lock.level);
 
   await prisma.licenseActivation.upsert({
     where: {
@@ -694,22 +907,11 @@ export async function recordPluginHeartbeat(
 
   if (result.source === "database") {
     const prisma = getPrismaClient();
-    const license = prisma
-      ? await prisma.license.findUnique({
-          where: {
-            key: input.licenseKey,
-          },
-        })
-      : null;
+    const license = await resolveLicenseForInput(input);
 
     if (prisma && license) {
       const siteHost = extractSiteHost(input.siteUrl);
-      const status =
-        result.payload.lock.level === "hard"
-          ? ActivationStatus.HARD_LOCK
-          : result.payload.lock.level === "soft"
-            ? ActivationStatus.WARNING
-            : ActivationStatus.HEALTHY;
+      const status = deriveActivationStatus(result.payload.lock.level);
 
       await prisma.licenseActivation.upsert({
         where: {
@@ -762,11 +964,30 @@ export async function getPluginUpdateManifest(
   input: PluginRequestInput,
 ): Promise<UpdateManifestResult> {
   const result = await getPluginControlResponse(input);
-  const releases =
-    result.source === "database"
-      ? await getDashboardSnapshot().then((snapshot) => snapshot.releases)
-      : demoReleases;
-  const release = releases[0];
+  const prisma = getPrismaClient();
+  const latestRelease =
+    result.source === "database" && prisma
+      ? await prisma.release.findFirst({
+          where: {
+            channel: ReleaseChannel.STABLE,
+          },
+          orderBy: {
+            publishedAt: "desc",
+          },
+        })
+      : null;
+
+  const release = latestRelease
+    ? {
+        version: latestRelease.version,
+        changelog: latestRelease.changelog,
+        publishedAt: toIsoString(latestRelease.publishedAt) ?? "",
+      }
+    : {
+        version: input.pluginVersion,
+        changelog: [],
+        publishedAt: new Date().toISOString(),
+      };
 
   if (result.source === "database") {
     await logRequest({
@@ -782,11 +1003,7 @@ export async function getPluginUpdateManifest(
 
   return {
     ...result,
-    release: {
-      version: release.version,
-      changelog: release.changelog,
-      publishedAt: release.publishedAt,
-    },
+    release,
   };
 }
 
