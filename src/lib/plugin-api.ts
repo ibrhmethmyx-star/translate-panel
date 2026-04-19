@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import type { PluginControlResponse, PluginRequestInput } from "@/lib/contracts";
+import { getPrismaClient } from "@/lib/prisma";
 
 function normalizeString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
@@ -37,25 +39,78 @@ export function readPluginQuery(url: string): PluginRequestInput {
   };
 }
 
-export function assertPluginAccess(request: Request): NextResponse | null {
-  const expectedSecret = process.env.PLUGIN_SHARED_SECRET?.trim();
+export function readInstallationToken(request: Request): string {
+  const authorization = request.headers.get("authorization")?.trim() ?? "";
 
-  if (!expectedSecret) {
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    return authorization.slice(7).trim();
+  }
+
+  return (
+    request.headers.get("x-dst-installation-token")?.trim() ??
+    request.headers.get("x-installation-token")?.trim() ??
+    ""
+  );
+}
+
+function hashInstallationToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+async function hasValidInstallationToken(token: string): Promise<boolean> {
+  if (!token) {
+    return false;
+  }
+
+  const prisma = getPrismaClient();
+
+  if (!prisma) {
+    return false;
+  }
+
+  const siteInstallation = await prisma.siteInstallation.findFirst({
+    where: {
+      accessTokenHash: hashInstallationToken(token),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return Boolean(siteInstallation);
+}
+
+export async function assertPluginAccess(
+  request: Request,
+  options: {
+    requireInstallationToken?: boolean;
+  } = {},
+): Promise<NextResponse | null> {
+  const expectedSecret = process.env.PLUGIN_SHARED_SECRET?.trim();
+  const providedToken = readInstallationToken(request);
+
+  if (providedToken && (await hasValidInstallationToken(providedToken))) {
     return null;
   }
 
-  const providedSecret =
-    request.headers.get("x-dst-plugin-secret")?.trim() ??
-    request.headers.get("x-plugin-secret")?.trim() ??
-    "";
+  if (expectedSecret) {
+    const providedSecret =
+      request.headers.get("x-dst-plugin-secret")?.trim() ??
+      request.headers.get("x-plugin-secret")?.trim() ??
+      "";
 
-  if (providedSecret === expectedSecret) {
+    if (providedSecret === expectedSecret) {
+      return null;
+    }
+  }
+
+  if (!options.requireInstallationToken) {
     return null;
   }
 
   return pluginError(
     "unauthorized_plugin_request",
-    "Missing or invalid plugin shared secret.",
+    "Missing or invalid installation token.",
     401,
   );
 }

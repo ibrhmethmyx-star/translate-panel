@@ -4,10 +4,11 @@ import {
   pluginError,
   pluginSuccess,
   readPluginBody,
+  readInstallationToken,
 } from "@/lib/plugin-api";
 
 export async function POST(request: Request) {
-  const accessError = assertPluginAccess(request);
+  const accessError = await assertPluginAccess(request);
 
   if (accessError) {
     return accessError;
@@ -22,9 +23,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await activatePluginInstallation(input);
+  const result = await activatePluginInstallation(
+    input,
+    readInstallationToken(request),
+  );
 
   return pluginSuccess(result.payload, result.source, {
     activation: result.activation,
+    ...(result.installation ? { installation: result.installation } : {}),
   });
 }

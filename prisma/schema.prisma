@@ -100,6 +100,7 @@ model SiteInstallation {
   siteHost         String
   instanceHash     String
   pluginVersion    String
+  accessTokenHash  String?          @unique
   licenseMode      SiteLicenseMode  @default(FREE)
   licenseKey       String?
   licenseStatus    LicenseStatus    @default(INACTIVE)

@@ -3,7 +3,9 @@ import { assertPluginAccess, pluginError } from "@/lib/plugin-api";
 import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
-  const accessError = assertPluginAccess(request);
+  const accessError = await assertPluginAccess(request, {
+    requireInstallationToken: true,
+  });
 
   if (accessError) {
     return accessError;

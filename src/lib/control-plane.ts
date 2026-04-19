@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import type {
   ActivationRecord,
   ControlPlaneDataSource,
@@ -63,6 +64,10 @@ type SiteDbRecord = Prisma.SiteInstallationGetPayload<{
 export interface ControlPlanePluginResult {
   source: ControlPlaneDataSource;
   payload: PluginControlResponse;
+  installation?: {
+    token: string;
+    issuedAt: string;
+  };
 }
 
 export interface ActivationResult extends ControlPlanePluginResult {
@@ -88,6 +93,14 @@ export interface UpdateManifestResult extends ControlPlanePluginResult {
 }
 
 export { apiSurface, implementationStages };
+
+function generateInstallationToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function hashInstallationToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 function toIsoString(value: Date | string | null | undefined): string | null {
   if (!value) {
@@ -509,15 +522,17 @@ async function resolveLicenseForInput(input: PluginRequestInput) {
 async function syncSiteInstallation(
   input: PluginRequestInput,
   payload: PluginControlResponse,
+  installationToken = "",
 ) {
   const prisma = getPrismaClient();
 
   if (!prisma) {
-    return;
+    return null;
   }
 
   const siteHost = extractSiteHost(input.siteUrl);
   const trimmedKey = input.licenseKey.trim();
+  const normalizedInstallationToken = installationToken.trim();
   const license = trimmedKey
     ? await prisma.license.findUnique({
         where: {
@@ -535,6 +550,28 @@ async function syncSiteInstallation(
       ? LicenseStatus.INVALID
       : LicenseStatus.INACTIVE;
   const plan = license?.plan ?? LicensePlan.FREE;
+  const existingInstallation = await prisma.siteInstallation.findUnique({
+    where: {
+      siteHost_instanceHash: {
+        siteHost,
+        instanceHash: input.instanceHash,
+      },
+    },
+    select: {
+      accessTokenHash: true,
+    },
+  });
+  const incomingTokenHash = normalizedInstallationToken
+    ? hashInstallationToken(normalizedInstallationToken)
+    : "";
+  const hasValidIncomingToken =
+    normalizedInstallationToken !== "" &&
+    existingInstallation?.accessTokenHash === incomingTokenHash;
+  const issuedToken = hasValidIncomingToken ? "" : generateInstallationToken();
+  const accessTokenHash = hasValidIncomingToken
+    ? existingInstallation?.accessTokenHash ?? null
+    : hashInstallationToken(issuedToken);
+  const issuedAt = new Date().toISOString();
 
   await prisma.siteInstallation.upsert({
     where: {
@@ -546,6 +583,7 @@ async function syncSiteInstallation(
     update: {
       siteUrl: input.siteUrl,
       pluginVersion: input.pluginVersion,
+      accessTokenHash,
       licenseId: license?.id ?? null,
       licenseKey: trimmedKey || null,
       licenseMode,
@@ -560,6 +598,7 @@ async function syncSiteInstallation(
       siteHost,
       instanceHash: input.instanceHash,
       pluginVersion: input.pluginVersion,
+      accessTokenHash,
       licenseId: license?.id ?? null,
       licenseKey: trimmedKey || null,
       licenseMode,
@@ -570,6 +609,13 @@ async function syncSiteInstallation(
       lastSeenAt: new Date(),
     },
   });
+
+  return issuedToken
+    ? {
+        token: issuedToken,
+        issuedAt,
+      }
+    : null;
 }
 
 async function getDatabaseSnapshot(): Promise<DashboardSnapshot> {
@@ -770,6 +816,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 export async function getPluginControlResponse(
   input: PluginRequestInput,
+  installationToken = "",
 ): Promise<ControlPlanePluginResult> {
   if (!hasDatabaseUrl()) {
     return {
@@ -780,8 +827,15 @@ export async function getPluginControlResponse(
 
   try {
     const result = await getDatabasePluginPayload(input);
-    await syncSiteInstallation(input, result.payload);
-    return result;
+    const installation = await syncSiteInstallation(
+      input,
+      result.payload,
+      installationToken,
+    );
+    return {
+      ...result,
+      ...(installation ? { installation } : {}),
+    };
   } catch (error) {
     console.error("Falling back to demo plugin payload:", error);
     return {
@@ -793,8 +847,9 @@ export async function getPluginControlResponse(
 
 export async function activatePluginInstallation(
   input: PluginRequestInput,
+  installationToken = "",
 ): Promise<ActivationResult> {
-  const result = await getPluginControlResponse(input);
+  const result = await getPluginControlResponse(input, installationToken);
 
   if (result.source === "demo") {
     return {
@@ -902,8 +957,9 @@ export async function activatePluginInstallation(
 
 export async function recordPluginHeartbeat(
   input: PluginRequestInput,
+  installationToken = "",
 ): Promise<HeartbeatResult> {
-  const result = await getPluginControlResponse(input);
+  const result = await getPluginControlResponse(input, installationToken);
 
   if (result.source === "database") {
     const prisma = getPrismaClient();
@@ -962,8 +1018,9 @@ export async function recordPluginHeartbeat(
 
 export async function getPluginUpdateManifest(
   input: PluginRequestInput,
+  installationToken = "",
 ): Promise<UpdateManifestResult> {
-  const result = await getPluginControlResponse(input);
+  const result = await getPluginControlResponse(input, installationToken);
   const prisma = getPrismaClient();
   const latestRelease =
     result.source === "database" && prisma
