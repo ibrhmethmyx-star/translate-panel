@@ -1,9 +1,13 @@
 import { revalidatePath } from "next/cache";
 import { LockLevel } from "@prisma/client";
 import { getPrismaClient, hasDatabaseUrl } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/auth";
+import { AppShell } from "@/components/app-shell";
 
 async function savePolicy(formData: FormData) {
   "use server";
+
+  await requireAdminSession();
 
   const prisma = getPrismaClient();
 
@@ -49,14 +53,24 @@ function toDateTimeLocal(date: Date) {
 }
 
 export default async function PoliciesPage() {
+  const session = await requireAdminSession();
+
   if (!hasDatabaseUrl()) {
-    return <EmptyState message="DATABASE_URL is missing. Add the real database first." />;
+    return (
+      <AppShell session={session}>
+        <EmptyState message="DATABASE_URL is missing. Add the real database first." />
+      </AppShell>
+    );
   }
 
   const prisma = getPrismaClient();
 
   if (!prisma) {
-    return <EmptyState message="Database client could not be created." />;
+    return (
+      <AppShell session={session}>
+        <EmptyState message="Database client could not be created." />
+      </AppShell>
+    );
   }
 
   const policies = await prisma.releasePolicy.findMany({
@@ -70,7 +84,8 @@ export default async function PoliciesPage() {
   const defaultGraceUntil = activePolicy ? toDateTimeLocal(activePolicy.graceUntil) : '';
 
   return (
-    <main className="space-y-8">
+    <AppShell session={session}>
+      <main className="space-y-8">
       <section className="rounded-[28px] border border-[var(--line-soft)] bg-white p-6 shadow-[0_20px_50px_rgba(17,33,43,0.06)]">
         <p className="text-xs uppercase tracking-[0.18em] text-[var(--accent)]">Policy control</p>
         <h2 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--ink-1)]">
@@ -170,7 +185,8 @@ export default async function PoliciesPage() {
           )}
         </div>
       </section>
-    </main>
+      </main>
+    </AppShell>
   );
 }
 

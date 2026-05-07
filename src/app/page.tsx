@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getDashboardSnapshot } from "@/lib/control-plane";
+import { requireAdminSession } from "@/lib/auth";
+import { AppShell } from "@/components/app-shell";
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -43,13 +45,15 @@ function StatCard({
 }
 
 export default async function Home() {
+  const session = await requireAdminSession();
   const snapshot = await getDashboardSnapshot();
   const latestRelease = snapshot.releases[0];
   const recentSites = snapshot.sites.slice(0, 6);
   const recentLicenses = snapshot.licenses.slice(0, 5);
 
   return (
-    <main className="space-y-8">
+    <AppShell session={session}>
+      <main className="space-y-8">
       <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-[32px] border border-[var(--line-soft)] bg-[var(--surface-2)] p-8 text-[var(--ink-inverse)] shadow-[0_30px_80px_rgba(17,33,43,0.18)]">
           <div className="flex flex-wrap gap-3 text-xs uppercase tracking-[0.24em] text-white/70">
@@ -286,6 +290,7 @@ export default async function Home() {
           </div>
         </section>
       </section>
-    </main>
+      </main>
+    </AppShell>
   );
 }

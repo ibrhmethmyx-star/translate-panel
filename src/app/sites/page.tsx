@@ -1,4 +1,6 @@
 import { getPrismaClient, hasDatabaseUrl } from "@/lib/prisma";
+import { requireAdminSession } from "@/lib/auth";
+import { AppShell } from "@/components/app-shell";
 
 function formatDate(value: Date | string) {
   return new Intl.DateTimeFormat("en-GB", {
@@ -8,14 +10,24 @@ function formatDate(value: Date | string) {
 }
 
 export default async function SitesPage() {
+  const session = await requireAdminSession();
+
   if (!hasDatabaseUrl()) {
-    return <EmptyState message="DATABASE_URL is missing. Add the real database first." />;
+    return (
+      <AppShell session={session}>
+        <EmptyState message="DATABASE_URL is missing. Add the real database first." />
+      </AppShell>
+    );
   }
 
   const prisma = getPrismaClient();
 
   if (!prisma) {
-    return <EmptyState message="Database client could not be created." />;
+    return (
+      <AppShell session={session}>
+        <EmptyState message="Database client could not be created." />
+      </AppShell>
+    );
   }
 
   const sites = await prisma.siteInstallation.findMany({
@@ -32,7 +44,8 @@ export default async function SitesPage() {
   ).length;
 
   return (
-    <main className="space-y-8">
+    <AppShell session={session}>
+      <main className="space-y-8">
       <section className="grid gap-4 md:grid-cols-4">
         <StatCard label="Total sites" value={totalSites} />
         <StatCard label="Licensed" value={licensedSites} />
@@ -86,7 +99,8 @@ export default async function SitesPage() {
           )}
         </div>
       </section>
-    </main>
+      </main>
+    </AppShell>
   );
 }
 

@@ -19,6 +19,7 @@ This panel now supports two modes:
 It already includes:
 
 - a dashboard that reflects the chosen hard-lock model
+- env-backed admin authentication for the control panel
 - Prisma schema for licenses, activations, releases, policies, and request logs
 - Prisma client wiring with safe demo fallback
 - plugin-facing API routes under `src/app/api/plugin/*`
@@ -27,7 +28,6 @@ It already includes:
 
 It does not yet include:
 
-- authentication
 - release uploads
 - signed downloads
 - WordPress-side signed request verification
@@ -59,6 +59,20 @@ npm run db:seed
 
 If `DATABASE_URL` is empty, the app still works in demo fallback mode.
 
+Set these values before opening the control panel:
+
+```env
+AUTH_SECRET=use-a-32-plus-character-random-secret
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=use-a-strong-password
+```
+
+You can generate a local secret with:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
 ## Plugin API surface
 
 - `POST /api/plugin/license/activate`
@@ -69,8 +83,7 @@ If `DATABASE_URL` is empty, the app still works in demo fallback mode.
 
 ## Recommended next pass
 
-1. Add admin auth and protected dashboard sections.
-2. Add release upload flow and signed package delivery.
-3. Update the WordPress plugin to cache control responses and respect hard lock mode.
-4. Replace plain shared-secret access with signed request verification.
-5. Deploy to Vercel and set `APP_BASE_URL`, `DATABASE_URL`, and `PLUGIN_SHARED_SECRET`.
+1. Add release upload flow and signed package delivery.
+2. Update the WordPress plugin to cache control responses and respect hard lock mode.
+3. Replace plain shared-secret access with signed request verification.
+4. Deploy to Vercel and set `APP_BASE_URL`, `DATABASE_URL`, `PLUGIN_SHARED_SECRET`, and admin auth env vars.
